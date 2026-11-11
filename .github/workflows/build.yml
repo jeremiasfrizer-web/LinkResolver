@@ -1,0 +1,66 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extrair projeto
+        run: unzip -q LinkResolver-projeto.zip
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Gerar wrapper e rodar testes
+        working-directory: LinkResolver
+        run: |
+          gradle wrapper --gradle-version 8.7
+          ./gradlew --no-daemon testDebugUnitTest
+      - name: Preparar assinatura
+        run: |
+          PW=$(openssl rand -hex 16)
+          echo "::add-mask::$PW"
+          keytool -genkeypair -keystore "$RUNNER_TEMP/release.jks" -alias linkresolver -keyalg RSA -keysize 2048 -validity 10000 -storepass "$PW" -keypass "$PW" -dname "CN=Link Resolver, O=Local, C=BR"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=$PW" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=linkresolver" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=$PW" >> "$GITHUB_ENV"
+      - name: Compilar APK
+        working-directory: LinkResolver
+        run: ./gradlew --no-daemon assembleRelease
+      - name: Verificar APK
+        working-directory: LinkResolver
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --verbose "$APK"
+          "$BT/aapt2" dump badging "$APK" | grep -E "package:|application-label:|sdkVersion"
+          cp "$APK" LinkResolver.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LinkResolver-apk
+          path: LinkResolver/LinkResolver.apk
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: LinkResolver-apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Link Resolver build ${{ github.run_number }}
+          make_latest: true
+          files: LinkResolver.apk
